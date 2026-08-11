@@ -152,15 +152,26 @@ errors, and by static checks on the data (distributions summing to 1, outcome
 weights summing to 1, every required flag reachable, every template placeholder
 resolvable, every icon slot bound to a file that exists).
 
-Running an identical strategy across 250 lives per identity produced a median
-net worth of about $212k for the White baseline against about $132k for the
-Black one — a 38% gap — and 40 criminal records against 15, from the same
-choices.
+Running an identical strategy — always take the best college tier available —
+across 250 lives per identity, ages 18 to 45:
 
-Two caveats on those figures. Net worth must be measured as cash *minus* debt:
-cash is floored at zero and shortfalls are converted to debt, so reading the
-money stat alone hides the cost and makes the gap look far smaller than it is.
-And the ordering across the middle identities is not cleanly monotonic with the
-bias parameters — `native` in particular lands higher than its coefficients
-suggest it should. The record counts track their parameters well; the wealth
-medians are noisier than a single run makes them look.
+| identity | median net worth | records | degrees |
+|---|---|---|---|
+| White | $264,711 | 18 | 233 |
+| Asian | $202,580 | 19 | 242 |
+| Native American | $169,849 | 46 | 220 |
+| Hispanic / Latino | $141,620 | 46 | 228 |
+| Black | $86,305 | 48 | 222 |
+
+A 67% wealth gap and 2.7× the criminal records, from the same choices. Note
+that degrees are nearly flat across identities (220–242) while wealth is not:
+everyone got educated, and the gap opened anyway — through admission tier,
+then callbacks, then promotions.
+
+Two caveats. Net worth must be measured as cash *minus* debt: cash is floored
+at zero and shortfalls become debt, so reading the money stat alone hides the
+cost and makes the gap look far smaller than it is. And the ordering across the
+middle identities is not perfectly monotonic with the bias parameters — Native
+American lands above Hispanic despite slightly worse coefficients. Record
+counts track their parameters closely; the wealth medians are noisier than one
+run makes them look.
