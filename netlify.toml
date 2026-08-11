@@ -1,2 +1,22 @@
+# Static site. No build step, no functions, no server-side code.
+#
+# The functions directory was removed deliberately: it contained a single
+# unauthenticated Gemini proxy that forwarded any POST body straight to the
+# model on a server-side key. Nothing called it. If AI is added back later it
+# needs auth and a rate limit before it goes near production.
+
 [build]
-  functions = ".netlify/functions"
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Pixel icons are content-addressed by name and change rarely.
+[[headers]]
+  for = "/assets/icons/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"

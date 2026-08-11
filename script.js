@@ -1,167 +1,884 @@
-// script.js — engine update: crime & substance systems, justice bias, new stats
-// Deterministic, offline. Works with updated data.js.
+// script.js — simulation engine.
+//
+// Design rules this file follows:
+//   1. Identity never sets a circumstance. It conditions a roll, and the roll
+//      is shown to the player alongside the distribution it came from.
+//   2. Every biased outcome reports its counterfactual. If a callback rate was
+//      multiplied by 0.67, the player is told what the number would have been.
+//      The bias is the content, so hiding it in the math defeats the exercise.
+//   3. Deterministic and offline. Seeded RNG, no network, no model calls.
 
-document.addEventListener('DOMContentLoaded', () => {
-  const creationScreen = document.getElementById('character-creation');
-  const gameContainer = document.getElementById('game-container');
-  const storyContainer = document.getElementById('story-container');
-  const choiceContainer = document.getElementById('choice-container');
-  const newGameBtn = document.getElementById('new-game-btn');
-  const exportBtn = document.getElementById('export-btn');
+(function () {
+  'use strict';
 
-  const createCharacterBtn = document.getElementById('create-character-btn');
-  const nameInput = document.getElementById('name-input');
-  const raceSelect = document.getElementById('race-select');
+  const D = window.GAME_DATA;
+  if (!D) throw new Error('GAME_DATA did not load — check that data.js is included before script.js');
 
-  const statAge = document.getElementById('stat-age');
-  const statHealth = document.getElementById('stat-health');
-  const statWealth = document.getElementById('stat-wealth');
+  // ── RNG ──────────────────────────────────────────────────────────────────
+  function mulberry32(a) {
+    return function () {
+      let t = (a += 0x6D2B79F5);
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  let rng = Math.random;
+  const roll = () => rng();
 
-  const inputArea = document.getElementById('input-area');
-  const userInput = document.getElementById('user-input');
-  const sendButton = document.getElementById('send-button');
+  // ── State ────────────────────────────────────────────────────────────────
+  let ch = null;
+  const SAVE_KEY = 'cyoa.character.v2';
 
-const GAME_DATA_REF = window.GAME_DATA;
-if (!GAME_DATA_REF) { throw new Error('GAME_DATA did not load'); }
+  // ── DOM ──────────────────────────────────────────────────────────────────
+  const $ = (id) => document.getElementById(id);
+  const el = {};
+  function cacheDom() {
+    [
+      'creation', 'game', 'feed', 'nameInput', 'identitySelect', 'startBtn',
+      'resetBtn', 'ageUpBtn', 'exportBtn', 'actionSheet', 'actionList',
+      'sheetTitle', 'closeSheet', 'tabBar', 'statAge', 'statHealth',
+      'statWealth', 'statSmarts', 'statAddiction', 'barHealth', 'barSmarts',
+      'barAddiction', 'charName', 'charSub', 'conditionsPanel', 'conditionsBody',
+      'conditionsBtn', 'closeConditions', 'addictionRow', 'livesCount'
+    ].forEach((k) => { el[k] = $(k); });
+  }
 
-const actions = GAME_DATA_REF.actions;
-const races = GAME_DATA_REF.races;
-const templates = GAME_DATA_REF.templates || { childhood: {} };
+  // ── Feed ─────────────────────────────────────────────────────────────────
+  function say(html, kind) {
+    const d = document.createElement('div');
+    d.className = 'entry ' + (kind || '');
+    d.innerHTML = html;
+    el.feed.appendChild(d);
+    el.feed.scrollTop = el.feed.scrollHeight;
+  }
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-  // RNG
-  function mulberry32(a){return function(){var t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
-  let rng = Math.random; function roll(){return rng();}
+  // ── Weighted sampling over a {key: prob} map ─────────────────────────────
+  function sampleDist(dist) {
+    const r = roll();
+    let cum = 0;
+    const keys = Object.keys(dist);
+    for (const k of keys) {
+      cum += dist[k];
+      if (r <= cum) return k;
+    }
+    return keys[keys.length - 1];
+  }
 
-  let character = null;
+  const pct = (x) => (x * 100).toFixed(0) + '%';
 
-  function append(html, cls='ai-text'){const p=document.createElement('div');p.className=cls;p.innerHTML=html;storyContainer.appendChild(p);storyContainer.scrollTop=storyContainer.scrollHeight;}
-  function clearChoices(){choiceContainer.innerHTML='';}
-  function renderStats(){if(!character)return; statAge.textContent=character.age; statHealth.textContent=Math.round(character.health); statWealth.textContent=`$${Math.round(character.wealth).toLocaleString()}`;}
-  function save(){try{localStorage.setItem('lifeSimCharacter',JSON.stringify(character));localStorage.setItem('lifeSimStory',storyContainer.innerHTML);}catch(e){}}
-  function load(){try{const s=localStorage.getItem('lifeSimCharacter');if(!s)return false;character=JSON.parse(s);storyContainer.innerHTML=localStorage.getItem('lifeSimStory')||'';rng=mulberry32((Date.parse(character.id)&0xffffffff)^(character.multipliers?.seedOffset||0));renderStats();creationScreen.classList.add('hidden');gameContainer.classList.remove('hidden');return true;}catch(e){return false}}
+  // ── Character creation ───────────────────────────────────────────────────
+  function rollCircumstance(identityKey) {
+    const out = {};
+    const detail = {};
+    for (const track of Object.keys(D.circumstance)) {
+      const spec = D.circumstance[track];
+      const cond = spec.byIdentity[identityKey] || spec.population;
+      const landed = sampleDist(cond);
+      out[track] = landed;
+      detail[track] = {
+        landed,
+        conditional: cond[landed],
+        population: spec.population[landed]
+      };
+    }
+    return { values: out, detail };
+  }
 
-  function createBaseCharacter(name,raceKey){const r=races[raceKey]||races.white;const seed=(Date.now()&0xffffffff)^(r.seedOffset||0);rng=mulberry32(seed);return{ id:`char_${Date.now()}`, name, race:raceKey, age:18, monthsPassed:0, health:100, wealth:500, academicPerformance:0, addiction:0, flags:{}, multipliers:{...r}, memory:{ household:{ guardians:'two-parent', employment: r.incomeBracket==='low'?'min_wage':'salaried', income_bracket:r.incomeBracket||'middle', housing: r.incomeBracket==='low'?'rental':'owned'}, schooling:{ elem_funding:r.schoolFundingLevel, middle_funding:r.schoolFundingLevel, high_funding:r.schoolFundingLevel, ap_access:r.schoolFundingLevel==='high', tracking:'standard' }, health:{ coverage: r.incomeBracket==='low'?'medicaid':'employer', chronic_conditions:[] }, neighborhood:{ crime:r.crimeExposure||'mid', policing_pressure: r.crimeExposure==='high'?'high':'mid' }, social:{ enrichment_access:r.schoolFundingLevel==='high'?'rich':'limited', networks:[] }, timeline:[] } } }
+  function effectsFor(track) {
+    return D.circumstanceEffects[track][ch.circumstance[track]];
+  }
 
-  // Childhood (same as earlier deterministic templates)
-  const phases=[{label:'PreK',start:0,end:4},{label:'Elementary',start:5,end:10},{label:'Middle',start:11,end:13},{label:'High',start:14,end:17}];
-  function renderTemplate(str,ctx){return (str||'').replace(/\{\{(\w+)\}\}/g,(m,k)=>ctx[k]??'');}
-  function buildPhaseCtx(){const m=character.multipliers,mem=character.memory;const schoolQ=m.schoolFundingLevel==='high'?'well‑resourced':(m.schoolFundingLevel==='mid'?'moderately resourced':'under‑resourced');return{ name:character.name, early_quality:m.schoolFundingLevel==='high'?'a rich early learning environment':(m.schoolFundingLevel==='mid'?'a modest early environment':'limited early exposure'), household_desc:`${mem.household.employment} guardians in a ${mem.household.income_bracket}-income household`, health_desc: mem.health.coverage==='medicaid'?'Medicaid coverage with delays':'employer/private coverage', literacy: (roll()<0.6)?'showed early interest in books':'had uneven practice', nutrition: m.schoolFundingLevel==='low'?'often budget-constrained':'adequate overall', neighborhood: mem.neighborhood.crime==='low'?'a relatively safe neighborhood':'a neighborhood with safety concerns', overall: (m.schoolFundingLevel==='high'||mem.household.income_bracket==='middle')?'progressed well':'faced constraints', class_size: m.schoolFundingLevel==='high'?'small (≈18)':(m.schoolFundingLevel==='mid'?'medium (22–26)':'large (28+)'), teacher_quality: roll()<0.6?'strong mentoring from a teacher':'limited individual attention', extras: mem.social.enrichment_access==='rich'?'clubs and private lessons':'few affordable options', tracking:'standard', tests:'standardized tests shaped priorities', school_quality: schoolQ, middle_quality: schoolQ, peers: roll()<0.7?'supportive peers':'mixed peer climate', counsel: roll()<0.5?'counseling helped at times':'limited counseling', timepress:'some family obligations plus homework', high_quality: schoolQ, ap: mem.schooling.ap_access?'AP/honors available':'limited AP access', work: roll()<0.4?'part‑time work during school':'no steady job during school', guidance: roll()<0.6?'useful guidance counseling':'under‑resourced guidance', internship: roll()<0.15?'a brief internship/job‑shadow':'no internship access', policing: mem.neighborhood.policing_pressure==='high'?'heightened police presence':'typical policing' } }
-  function runChildhoodPhases(){append(`<strong>Beginning childhood simulation for ${character.name}...</strong>`, 'ai-text event-text');for(const ph of phases){character.age=ph.start;renderStats();const ctx=buildPhaseCtx();const t=(templates.childhood||{})[ph.label]||'';const para=renderTemplate(t,ctx);let healthDelta=0,wealthDelta=0,acadDelta=0;const fund=character.multipliers.schoolFundingLevel;if(fund==='low'){acadDelta-=2;healthDelta-=1}else if(fund==='high'){acadDelta+=2;wealthDelta+=200} if(character.memory.household.income_bracket==='low'){wealthDelta-=400;acadDelta-=1} if(roll()< (0.12+(fund==='low'?0.08:0))){character.memory.timeline.push({phase:ph.label,event:'hardship',desc:'Family financial shock.'});wealthDelta-=800;acadDelta-=1} character.health+=healthDelta;character.wealth+=wealthDelta;character.academicPerformance+=acadDelta;append(`<strong>${ph.label} (${ph.start}–${ph.end}):</strong> ${para}`,'ai-text');character.memory.timeline.push({phase:ph.label,age_range:`${ph.start}-${ph.end}`,summary:para.slice(0,140)});character.age=ph.end+1; save();} append('<strong>Childhood complete — adulthood begins.</strong>','ai-text event-text'); inputArea.style.display='block'; presentTurnChoices(); }
+  function createCharacter(name, identityKey) {
+    const seed = (Date.now() & 0xffffffff) ^ (identityKey.length * 7919);
+    rng = mulberry32(seed);
 
-  // ===== ACTION ENGINE with justice & substance effects =====
-  function flag(key){return !!character.flags[key];}
-  function setFlags(obj){ if(!obj) return; for(const k of Object.keys(obj)){ character.flags[k]=obj[k]; } }
-  function flagKeyVal(spec){ const [k,v]=spec.split(':'); return [k, v==="true"?true:(v==="false"?false:v)]; }
-  function satisfiesRequires(req={}){
-    if(req.age_min!==undefined && character.age<req.age_min) return false;
-    if(req.age_max!==undefined && character.age>req.age_max) return false;
-    if(req.wealth_min!==undefined && character.wealth<req.wealth_min) return false;
-    if(req.flags_all){ for(const spec of req.flags_all){ const [k,v]=flagKeyVal(spec); if((character.flags[k]??null)!==v) return false; } }
-    if(req.flags_any){ let ok=false; for(const spec of req.flags_any){ const [k,v]=flagKeyVal(spec); if((character.flags[k]??null)===v || ((v===undefined)&&flag(k))) { ok=true; break; } } if(!ok) return false; }
-    if(req.flags_not){ for(const spec of req.flags_not){ const [k,v]=flagKeyVal(spec); if((character.flags[k]??null)===v) return false; } }
+    const rolled = rollCircumstance(identityKey);
+    const hh = D.circumstanceEffects.household[rolled.values.household];
+
+    ch = {
+      id: 'char_' + Date.now(),
+      seed,
+      name,
+      identity: identityKey,
+      circumstance: rolled.values,
+      circumstanceDetail: rolled.detail,
+      age: 0,
+      monthsPassed: 0,
+      health: 100,
+      wealth: hh.startWealth,
+      debt: 0,
+      academicPerformance: 0,
+      addiction: 0,
+      job: 'unemployed',
+      salary: 0,
+      yearsEmployed: 0,
+      flags: {},
+      childhoodDone: false,
+      timeline: []
+    };
+  }
+
+  // ── The conditions panel: the thesis, made legible ───────────────────────
+  function renderConditions() {
+    const id = D.identities[ch.identity];
+    let h = '';
+
+    h += '<h4>What you chose</h4>';
+    h += '<p class="dim">Identity does not set your circumstances in this model. It changes how other people treat you.</p>';
+    h += '<table class="cond">';
+    h += row('Identity', id.label);
+    h += biasRow('Callback rate on applications', id.callbackMultiplier);
+    h += biasRow('Rate of involuntary police contact', id.stopMultiplier, true);
+    h += biasRow('Cost of carrying a record', id.recordPenalty, true);
+    h += biasRow('Likelihood of being treated for pain', id.painDiscount);
+    h += '</table>';
+
+    h += '<h4>What the world assigned you</h4>';
+    h += '<p class="dim">Each of these was rolled from a distribution conditioned on your identity. You did not choose any of it, and neither did anyone in the simulation.</p>';
+    h += '<table class="cond">';
+    for (const track of Object.keys(D.circumstance)) {
+      const spec = D.circumstance[track];
+      const det = ch.circumstanceDetail[track];
+      const label = spec.levelLabels[det.landed];
+      const lift = det.population > 0 ? det.conditional / det.population : 1;
+      const liftTxt = lift >= 1.15
+        ? `<span class="worse">${lift.toFixed(1)}× the population rate</span>`
+        : lift <= 0.87
+          ? `<span class="better">${lift.toFixed(1)}× the population rate</span>`
+          : `<span class="dim">about the population rate</span>`;
+      h += `<tr><td>${esc(spec.label)}</td><td><strong>${esc(label)}</strong><br>
+            <small class="dim">${pct(det.conditional)} of people with your identity land here; ${pct(det.population)} of everyone does.</small><br>
+            <small>${liftTxt}</small></td></tr>`;
+    }
+    h += '</table>';
+
+    h += '<h4>What that adds up to right now</h4>';
+    h += '<table class="cond">';
+    const fs = effectsFor('familySupport');
+    const hc = effectsFor('healthCoverage');
+    const nb = effectsFor('neighborhood');
+    h += row('Share of a financial shock you can absorb', pct(fs.shockAbsorb));
+    h += row('Chance someone bails you out', pct(fs.bailoutChance));
+    h += row('Medical cost multiplier', hc.medicalCostMultiplier.toFixed(1) + '×');
+    h += row('Base police contact per year', pct(nb.stopBase * D.identities[ch.identity].stopMultiplier));
+    if (ch.flags.record) h += row('Criminal record', '<span class="worse">on file</span>');
+    if (ch.debt > 0) h += row('Debt', '$' + Math.round(ch.debt).toLocaleString());
+    h += '</table>';
+
+    h += `<p class="credit-foot">
+            <strong>${readLives().toLocaleString()}+</strong> lives lived<br>
+            Built by <strong>Patrick Kim</strong> &middot; Governor's Academy, Class of 2027
+          </p>`;
+
+    el.conditionsBody.innerHTML = h;
+
+    function row(k, v) { return `<tr><td>${esc(k)}</td><td>${v}</td></tr>`; }
+    function biasRow(k, m, higherIsWorse) {
+      const neutral = Math.abs(m - 1) < 0.02;
+      const bad = higherIsWorse ? m > 1.02 : m < 0.98;
+      const cls = neutral ? 'dim' : (bad ? 'worse' : 'better');
+      return `<tr><td>${esc(k)}</td><td class="${cls}">${m.toFixed(2)}×</td></tr>`;
+    }
+  }
+
+  // ── Childhood ────────────────────────────────────────────────────────────
+  const PHASES = [
+    { label: 'PreK', start: 0, end: 4 },
+    { label: 'Elementary', start: 5, end: 10 },
+    { label: 'Middle', start: 11, end: 13 },
+    { label: 'High', start: 14, end: 17 }
+  ];
+
+  function fillTemplate(str, ctx) {
+    return (str || '')
+      .replace(/\{\{(\w+)\}\}/g, (m, k) => (ctx[k] !== undefined ? ctx[k] : ''))
+      .replace(/\s{2,}/g, ' ')   // optional lines leave gaps when empty
+      .replace(/\s+\./g, '.')
+      .trim();
+  }
+
+  // "a well-resourced" vs "an under-resourced"
+  function withArticle(phrase) {
+    return (/^[aeiou]/i.test(phrase) ? 'an ' : 'a ') + phrase;
+  }
+
+  function phaseContext(phase) {
+    const sf = D.circumstance.schoolFunding.levelLabels[ch.circumstance.schoolFunding].toLowerCase();
+    const sfx = effectsFor('schoolFunding');
+    const hhx = effectsFor('household');
+    const hcLabel = D.circumstance.healthCoverage.levelLabels[ch.circumstance.healthCoverage].toLowerCase();
+    const hhLabel = D.circumstance.household.levelLabels[ch.circumstance.household].toLowerCase();
+    const nb = ch.circumstance.neighborhood;
+
+    return {
+      name: esc(ch.name),
+      household_desc: hhLabel,
+      coverage_desc: hcLabel,
+      early_care: ch.circumstance.household === 'upper' || ch.circumstance.household === 'middle'
+        ? 'a structured preschool program'
+        : (roll() < 0.5 ? 'a relative during the day' : 'whatever could be arranged around work schedules'),
+      school_quality: withArticle(sf),
+      class_size: sfx.classSize,
+      counseling: sfx.counseling,
+      enrichment: hhx.enrichment,
+      teacher_line: roll() < 0.55
+        ? 'One teacher takes an interest and it matters more than anything on the curriculum.'
+        : 'No one teacher has the bandwidth to notice much.',
+      peer_line: roll() < 0.6
+        ? 'The peer group is mostly steady.'
+        : 'The peer group churns as families move for rent.',
+      policing_line: nb === 'high_stress'
+        ? 'There is a school resource officer, and discipline referrals go to him.'
+        : 'Discipline stays inside the building.',
+      ap_line: sfx.apAccess
+        ? 'AP and honors courses exist here, and getting into them depends on a referral.'
+        : 'There are no AP courses offered at this school, so there is nothing to be referred to.',
+      work_line: ch.circumstance.household === 'low' || ch.circumstance.household === 'lower_middle'
+        ? 'You work about twenty hours a week, which comes out of homework time.'
+        : 'You do not need to work during the school year.',
+      hardship_line: ''
+    };
+  }
+
+  function runChildhood() {
+    say(`<strong>${esc(ch.name)}</strong> is born.`, 'beat');
+
+    for (const ph of PHASES) {
+      ch.age = ph.start;
+      const ctx = phaseContext(ph);
+
+      // Phase-level drift from circumstance
+      const sfx = effectsFor('schoolFunding');
+      const hhx = effectsFor('household');
+      const years = ph.end - ph.start + 1;
+
+      ch.academicPerformance += sfx.academicPerYear * (years / 4);
+      ch.wealth += hhx.yearlyDrag * (years / 4);
+
+      // Shock, absorbed or not
+      const shockP = 0.12 + (ch.circumstance.household === 'low' ? 0.12 : 0);
+      if (roll() < shockP) {
+        const absorb = effectsFor('familySupport').shockAbsorb;
+        const raw = -900;
+        const net = raw * (1 - absorb);
+        ch.wealth += net;
+        ctx.hardship_line = absorb >= 0.7
+          ? 'A financial shock hits the household and is absorbed without anyone under eighteen noticing.'
+          : `A financial shock hits the household and it is felt. (${Math.round(net)} to savings; a solid cushion would have absorbed ${pct(0.8)} of it.)`;
+        if (absorb < 0.7) ch.academicPerformance -= 1;
+      }
+
+      const prose = fillTemplate(D.templates.childhood[ph.label], ctx);
+      say(`<span class="age-tag">Age ${ph.start}–${ph.end}</span> ${prose}`, 'beat');
+      ch.timeline.push({ phase: ph.label, summary: prose.slice(0, 160) });
+      renderStats();
+    }
+
+    ch.age = 18;
+    ch.childhoodDone = true;
+    say('You turn eighteen. Everything above is now simply your record, and nobody who reads it will see any of the context.', 'beat major');
+    renderStats();
+    save();
+  }
+
+  // ── Odds machinery ───────────────────────────────────────────────────────
+  // Outcomes are ordered best-first by convention in data.js. A tilt multiplier
+  // below 1 shifts mass away from the best outcomes toward the worst.
+  function tilt(outcomes, m) {
+    const n = outcomes.length;
+    if (n < 2 || Math.abs(m - 1) < 0.001) return outcomes.map((o) => o.chance);
+    const w = outcomes.map((o, i) => o.chance * Math.pow(m, n - 1 - i));
+    const total = w.reduce((a, b) => a + b, 0);
+    return w.map((x) => x / total);
+  }
+
+  // Returns the multiplier applied to an action, plus a human explanation.
+  function biasFor(action) {
+    const id = D.identities[ch.identity];
+    let m = 1;
+    const why = [];
+
+    if (action.tags.includes('job') || action.tags.includes('college')) {
+      m *= id.callbackMultiplier;
+      if (id.callbackMultiplier < 0.99) {
+        why.push(`applications screened at ${id.callbackMultiplier.toFixed(2)}×`);
+      }
+    }
+    if (action.tags.includes('health') && id.painDiscount < 0.99) {
+      m *= id.painDiscount;
+      why.push(`reported symptoms discounted at ${id.painDiscount.toFixed(2)}×`);
+    }
+    if (ch.flags.record && (action.tags.includes('job') || action.tags.includes('housing'))) {
+      const penalty = 1 / id.recordPenalty;
+      m *= penalty;
+      why.push(`record costs you ${penalty.toFixed(2)}× here (${id.recordPenalty.toFixed(2)}× the penalty applied to a White applicant with the same record)`);
+    }
+    if (ch.addiction >= 40 && (action.tags.includes('job') || action.tags.includes('college'))) {
+      m *= 0.85;
+      why.push('substance use is affecting reliability');
+    }
+
+    // Circumstance mods declared on the action
+    const mods = action.mods || {};
+    if (mods.schoolFunding) {
+      const lvl = ch.circumstance.schoolFunding;
+      const b = lvl === 'well' ? 1.12 : lvl === 'moderate' ? 1.0 : 0.88;
+      m *= b;
+      if (b !== 1) why.push(`${lvl === 'well' ? 'well' : 'under'}-resourced schooling (${b.toFixed(2)}×)`);
+    }
+    if (mods.familySupport) {
+      const lvl = ch.circumstance.familySupport;
+      const b = lvl === 'solid' ? 1.15 : lvl === 'thin' ? 1.0 : 0.88;
+      m *= b;
+      if (b !== 1) why.push(`family cushion (${b.toFixed(2)}×)`);
+    }
+    if (mods.coverage) {
+      const lvl = ch.circumstance.healthCoverage;
+      const b = lvl === 'employer' ? 1.15 : lvl === 'medicaid' ? 0.95 : 0.75;
+      m *= b;
+      why.push(`${D.circumstance.healthCoverage.levelLabels[lvl].toLowerCase()} (${b.toFixed(2)}×)`);
+    }
+    if (mods.academicPerformance) {
+      const b = 1 + Math.max(-0.2, Math.min(0.25, ch.academicPerformance / 60));
+      m *= b;
+    }
+    if (mods.hiring && ch.flags.record) {
+      m *= 0.8;
+    }
+
+    return { m, why };
+  }
+
+  function pickOutcome(outcomes, weights) {
+    const r = roll();
+    let cum = 0;
+    for (let i = 0; i < outcomes.length; i++) {
+      cum += weights[i];
+      if (r <= cum) return i;
+    }
+    return outcomes.length - 1;
+  }
+
+  // ── Eligibility ──────────────────────────────────────────────────────────
+  function parseFlag(spec) {
+    const idx = spec.indexOf(':');
+    if (idx === -1) return [spec, true];
+    const k = spec.slice(0, idx);
+    const v = spec.slice(idx + 1);
+    return [k, v === 'true' ? true : v === 'false' ? false : v];
+  }
+
+  function eligible(a) {
+    const r = a.requires || {};
+    if (r.age_min !== undefined && ch.age < r.age_min) return false;
+    if (r.age_max !== undefined && ch.age > r.age_max) return false;
+    if (r.wealth_min !== undefined && ch.wealth < r.wealth_min) return false;
+    if (r.addiction_min !== undefined && ch.addiction < r.addiction_min) return false;
+    if (r.apAccess !== undefined && effectsFor('schoolFunding').apAccess !== r.apAccess) return false;
+    if (r.job_not && r.job_not.includes(ch.job)) return false;
+    if (r.flags_all) for (const s of r.flags_all) { const [k, v] = parseFlag(s); if ((ch.flags[k] ?? null) !== v) return false; }
+    if (r.flags_not) for (const s of r.flags_not) { const [k, v] = parseFlag(s); if ((ch.flags[k] ?? null) === v) return false; }
+    if (r.flags_any) {
+      let ok = false;
+      for (const s of r.flags_any) { const [k, v] = parseFlag(s); if ((ch.flags[k] ?? null) === v) { ok = true; break; } }
+      if (!ok) return false;
+    }
     return true;
   }
 
-  function systemicChanceMods(a, base){
-    let p=base;
-    // Hiring bias lowers job chances
-    if(a.tags?.includes('job')) p*= (1 - (character.multipliers.hiringBias||0));
-    // Justice disadvantage: make negative justice outcomes more likely
-    if(a.tags?.includes('justice')) p+= (character.multipliers.justiceSystemDisadvantage||0)*-0.05; // baseline nudge
-    // Substance use makes many actions harder
-    if(character.addiction>=30 && (a.tags?.includes('job')||a.tags?.includes('college'))) p-=0.05;
-    if(character.addiction>=60 && (a.tags?.includes('job')||a.tags?.includes('college'))) p-=0.1;
+  // ── Applying effects ─────────────────────────────────────────────────────
+  function setJob(key) {
+    const j = D.jobs[key];
+    if (!j) return;
+    ch.job = key;
+    ch.salary = j.salary;
+    ch.yearsEmployed = 0;
+  }
 
-    // Custom mods from data
-    if(a.mods){
-      const mods=a.mods;
-      if(mods.schoolFundingLevel){ const lvl=character.multipliers.schoolFundingLevel; const delta=mods.schoolFundingLevel; if(lvl==='high') p+=0.05*delta; else if(lvl==='mid') p+=0.02*delta; else p+=-0.03*delta; }
-      if(mods.familySupportChance){ p+= 0.1*mods.familySupportChance*(character.multipliers.familySupportChance||0); }
-      if(mods.hiringBias){ p+= (-(character.multipliers.hiringBias||0))*Math.abs(mods.hiringBias); }
-      if(mods.crimeExposure){ p+= (character.multipliers.crimeExposure==='high'?0.05:0.0)*mods.crimeExposure; }
-      if(mods.medicalTreatmentModifier){ p+= (character.multipliers.medicalTreatmentModifier||0)*mods.medicalTreatmentModifier; }
-      if(mods.academicPerformance){ p+= (character.academicPerformance/20)*mods.academicPerformance; }
+  function applyEffects(fx) {
+    if (!fx) return;
+    if (fx.setJob) setJob(fx.setJob);
+    if (fx.durationMonths) {
+      ch.monthsPassed += fx.durationMonths;
+      while (ch.monthsPassed >= 12) { ch.age++; ch.monthsPassed -= 12; }
     }
-    return Math.max(0.05, Math.min(0.95, p));
-  }
-
-  function weightedPick(outcomes){ let r=roll(); let cum=0; for(const o of outcomes){ cum+=o.chance; if(r<=cum) return o; } return outcomes[outcomes.length-1]; }
-
-  // Post-turn systemic drips (addiction drain, policing exposure, relapse/overdose risk)
-  function postTurnRisks(){
-    let notes=[];
-    // Addiction passive effects
-    if(character.addiction>=20){ const drain = character.addiction>=60? -4 : (character.addiction>=40? -2 : -1); character.health+=drain; if(drain<0) notes.push(`Health ${drain}`); character.wealth += (character.addiction>=40? -50 : -20); }
-    // Overdose emergency (rare; higher with high addiction & medical access)
-    const odBase = (character.addiction>=70)? 0.06 : (character.addiction>=50? 0.02 : 0.0);
-    if(roll()<odBase){ character.health -= 12; character.wealth -= 400; character.memory.timeline.push({phase:'Adult', event:'overdose_emergency'}); append(`<strong>Emergency:</strong> Overdose scare leads to hospital bills and recovery time.`,'ai-text event-text'); }
-    // Random police contact if record or high crime exposure
-    const policeP = (character.flags.record?0.06:0.02) + (character.multipliers.crimeExposure==='high'?0.03:0);
-    if(roll()<policeP){ append(`<strong>Encounter:</strong> A police stop adds stress and time lost.`,'ai-text event-text'); character.health -= 1; }
-    if(notes.length){ append(`<small>Ongoing effects: ${notes.join(', ')}</small>`,'ai-text'); }
-  }
-
-  function presentTurnChoices(){
-    clearChoices();
-    const elig = Object.entries(actions).filter(([id,a])=>satisfiesRequires(a.requires||{}));
-    if(elig.length===0){ append('No eligible actions right now. Try working to build resources.','ai-text event-text'); return; }
-    append('<em>Choose an action:</em>','ai-text event-text');
-    // Prioritize diversity of tags, but bias toward support if addiction/record present
-    const prioritized = [];
-    const wantSupport = (character.addiction>=30)||character.flags.record;
-    const tagOrder = wantSupport ? ['substance','justice','job','college','finance','health','housing','network','trade','school'] : ['job','college','finance','school','network','health','housing','justice','substance','trade'];
-    for(const tag of tagOrder){
-      const found = elig.find(([id,a])=>a.tags?.includes(tag));
-      if(found && !prioritized.some(x=>x[0]===found[0])) prioritized.push(found);
-      if(prioritized.length>=6) break;
+    if (typeof fx.health === 'number') ch.health = Math.max(0, Math.min(100, ch.health + fx.health));
+    if (typeof fx.wealth === 'number') {
+      let w = fx.wealth;
+      // Medical costs scale with coverage
+      if (w < 0 && fx.medical) w *= effectsFor('healthCoverage').medicalCostMultiplier;
+      ch.wealth += w;
     }
-    for(const [id,a] of prioritized){ const btn=document.createElement('button'); btn.className='choice-btn'; btn.textContent=a.label; btn.onclick=()=>resolveAction(id); choiceContainer.appendChild(btn); }
+    if (typeof fx.debt === 'number') ch.debt = Math.max(0, ch.debt + fx.debt);
+    if (typeof fx.academicPerformance === 'number') ch.academicPerformance += fx.academicPerformance;
+    if (typeof fx.addiction === 'number') ch.addiction = Math.max(0, Math.min(100, ch.addiction + fx.addiction));
+
+    // Anything that would take you below zero is borrowed, not owned.
+    if (ch.wealth < 0) {
+      ch.debt += Math.round(-ch.wealth);
+      ch.wealth = 0;
+    }
   }
 
-  function resolveAction(actionId){
-    const a=actions[actionId]; if(!a) return;
-    // upfront costs
-    if(a.cost){ character.wealth+=(a.cost.wealth||0)*-1; character.health+=(a.cost.health||0)*-1; }
+  function setFlags(obj) {
+    if (!obj) return;
+    for (const k of Object.keys(obj)) ch.flags[k] = obj[k];
+  }
 
-    // Compute baseline (used for display only; outcomes themselves are weightedPick)
-    const p = systemicChanceMods(a, a.baseChance||0.5);
+  // ── Taking an action ─────────────────────────────────────────────────────
+  function doAction(actionId) {
+    const a = D.actions[actionId];
+    if (!a) return;
+    closeSheet();
 
-    // Pick weighted outcome
-    const out = weightedPick(a.outcomes||[{id:'neutral',chance:1,text:'Nothing much happens.',effects:{}}]);
+    if (a.cost) {
+      if (a.cost.wealth) ch.wealth -= a.cost.wealth;
+      if (a.cost.health) ch.health -= a.cost.health;
+    }
 
-    // Apply effects (including addiction delta if present)
-    const fx = out.effects||{};
-    if(fx.durationMonths){ character.monthsPassed+=fx.durationMonths; while(character.monthsPassed>=12){ character.age++; character.monthsPassed-=12; } }
-    if(typeof fx.health==='number') character.health += fx.health;
-    if(typeof fx.wealth==='number') character.wealth += fx.wealth;
-    if(typeof fx.academicPerformance==='number') character.academicPerformance += fx.academicPerformance;
-    if(typeof fx.addiction==='number') character.addiction = Math.max(0, Math.min(100, character.addiction + fx.addiction));
+    const { m, why } = biasFor(a);
+    const base = a.outcomes.map((o) => o.chance);
+    const weights = tilt(a.outcomes, m);
+    const idx = pickOutcome(a.outcomes, weights);
+    const out = a.outcomes[idx];
 
-    if(out.flags_set) setFlags(out.flags_set);
+    applyEffects(out.effects);
+    setFlags(out.flags_set);
 
-    // Record + narrate
-    append(`<strong>Action — ${a.label}:</strong> ${out.text} <br><small>Baseline chance: ${(p*100).toFixed(0)}%</small>`, 'ai-text event-text');
-    character.memory.timeline.push({ phase:'Adult', age:character.age, action:actionId, outcome:out.id, text:out.text, addiction:character.addiction, flags:{...character.flags} });
+    let html = `<span class="age-tag">Age ${ch.age}</span> <strong>${esc(a.label)}</strong><br>${esc(out.text)}`;
+
+    // The counterfactual. This is the point of the exercise.
+    if (Math.abs(m - 1) > 0.02) {
+      const bestBefore = base[0];
+      const bestAfter = weights[0];
+      const dir = bestAfter < bestBefore ? 'worse' : 'better';
+      html += `<div class="odds ${dir}">Best outcome: <strong>${pct(bestAfter)}</strong>`;
+      html += ` &middot; unbiased it would have been <strong>${pct(bestBefore)}</strong>`;
+      if (why.length) html += `<br><small>${esc(why.join('; '))}</small>`;
+      html += '</div>';
+    }
+
+    say(html, 'action');
+    ch.timeline.push({ age: ch.age, action: actionId, outcome: out.id, tilt: m });
+    renderStats();
+    checkDeath();
+    save();
+  }
+
+  // ── Age up: the BitLife loop ─────────────────────────────────────────────
+  function ageUp() {
+    ch.age++;
+    say(`<span class="age-tag age-major">Age ${ch.age}</span>`, 'year');
+
+    // Passive drift
+    const nb = effectsFor('neighborhood');
+    ch.health += nb.healthPerYear;
+
+    // ── The year's ledger ──────────────────────────────────────────────────
+    const E = D.economy;
+    const livingIndependently = !!ch.flags.housed;
+
+    let earned = 0;
+    if (ch.salary > 0) {
+      earned = ch.salary;
+      ch.yearsEmployed++;
+      // annual raise
+      const raise = D.jobs[ch.job].raise;
+      ch.salary = Math.round(ch.salary * (1 + raise));
+    }
+
+    // A dependent with no income is carried by the household; they don't pay
+    // a full share. Independence is what makes cost of living bite.
+    let col;
+    if (livingIndependently) {
+      col = E.costOfLivingBase;
+    } else if (earned === 0) {
+      col = E.costOfLivingDependent;
+    } else {
+      col = E.costOfLivingAtHome;
+    }
+
+    const net = earned - col;
+    ch.wealth += net;
+
+    // Money can't go negative — a shortfall is borrowing, and it compounds.
+    if (ch.wealth < 0) {
+      const shortfall = Math.round(-ch.wealth);
+      ch.debt += shortfall;
+      ch.wealth = 0;
+      say(`You cover a $${shortfall.toLocaleString()} shortfall on credit.`, 'bad');
+    }
+
+    if (earned > 0) {
+      say(
+        `<strong>${esc(D.jobs[ch.job].title)}</strong> &middot; earned $${earned.toLocaleString()}, ` +
+        `cost of living $${col.toLocaleString()} &rarr; ` +
+        `<strong class="${net >= 0 ? 'better' : 'worse'}">${net >= 0 ? '+' : '−'}$${Math.abs(net).toLocaleString()}</strong>`,
+        'minor'
+      );
+    } else {
+      say(`No income this year. Cost of living $${col.toLocaleString()}.`, 'minor');
+    }
+
+    // Promotion
+    const promo = E.promotion[ch.job];
+    if (promo && ch.yearsEmployed >= 2) {
+      const needsMet = !promo.needs || promo.needs.some((s) => {
+        const [k, v] = parseFlag(s);
+        return (ch.flags[k] ?? null) === v;
+      });
+      if (needsMet) {
+        // Promotion is a hiring decision, so identity bias applies here too.
+        const id = D.identities[ch.identity];
+        const p = promo.chance * id.callbackMultiplier;
+        if (roll() < p) {
+          const from = D.jobs[ch.job].title;
+          setJob(promo.to);
+          let m = `<strong>Promoted.</strong> ${esc(from)} &rarr; ${esc(D.jobs[ch.job].title)}, now $${ch.salary.toLocaleString()}.`;
+          if (id.callbackMultiplier < 0.99) {
+            m += `<div class="odds worse">Promotion chance this year: <strong>${pct(p)}</strong> &middot; unbiased it would have been <strong>${pct(promo.chance)}</strong></div>`;
+          }
+          say(m, 'action');
+        }
+      }
+    }
+
+    // Layoff
+    if (ch.salary > 0) {
+      const risk = D.jobs[ch.job].layoffRisk * (ch.flags.record ? 1.4 : 1) * (ch.addiction >= 50 ? 1.5 : 1);
+      if (roll() < risk) {
+        say(`<strong>Laid off</strong> from ${esc(D.jobs[ch.job].title)}.`, 'bad');
+        setJob('unemployed');
+      }
+    }
+
+    // Debt interest
+    if (ch.debt > 0) {
+      const interest = Math.round(ch.debt * E.debtInterest);
+      ch.debt += interest;
+      say(`Debt accrues <strong>$${interest.toLocaleString()}</strong> in interest.`, 'minor');
+    }
+
+    // Addiction drag
+    if (ch.addiction >= 20) {
+      const drain = ch.addiction >= 60 ? -6 : ch.addiction >= 40 ? -3 : -1.5;
+      ch.health += drain;
+      ch.wealth -= ch.addiction >= 40 ? 900 : 300;
+      say(`Substance use costs you health and money this year.`, 'minor');
+      if (ch.addiction >= 70 && roll() < 0.08) {
+        const cost = Math.round(-2400 * effectsFor('healthCoverage').medicalCostMultiplier);
+        ch.health -= 14;
+        ch.wealth += cost;
+        say(`<strong>Overdose.</strong> You survive it. The bill is $${Math.abs(cost).toLocaleString()}, scaled by your coverage.`, 'bad');
+      }
+    }
+
+    // Police contact — the one place identity multiplies a rate directly
+    const id = D.identities[ch.identity];
+    const stopP = Math.min(0.6, nb.stopBase * id.stopMultiplier + (ch.flags.record ? 0.05 : 0));
+    if (roll() < stopP) {
+      const r = roll();
+      if (r < 0.72) {
+        ch.health -= 1;
+        say(`Stopped and questioned. Released. <span class="odds worse">Annual stop probability for you: ${pct(stopP)} · at the population rate it would be ${pct(Math.min(0.6, nb.stopBase))}</span>`, 'bad');
+      } else if (r < 0.94) {
+        ch.wealth -= 220;
+        say(`Stopped and cited. The fine is $220 and the court date is on a workday.`, 'bad');
+      } else {
+        ch.health -= 4;
+        setFlags({ record: true, charged: true });
+        say(`<strong>Arrested.</strong> Charges filed. This will follow you into every application from here.`, 'bad');
+      }
+    }
+
+    // A random life event
+    const evKeys = Object.keys(D.events);
+    const totalW = evKeys.reduce((s, k) => s + D.events[k].weight, 0);
+    if (roll() < 0.55) {
+      let r = roll() * totalW, chosen = evKeys[0];
+      for (const k of evKeys) { r -= D.events[k].weight; if (r <= 0) { chosen = k; break; } }
+      const ev = D.events[chosen];
+      const idx = pickOutcome(ev.outcomes, ev.outcomes.map((o) => o.chance));
+      const out = ev.outcomes[idx];
+
+      const fx = Object.assign({}, out.effects);
+      let absorbedNote = '';
+      if (ev.absorbable && fx.wealth < 0) {
+        const absorb = effectsFor('familySupport').shockAbsorb;
+        if (absorb > 0) {
+          const saved = Math.round(fx.wealth * absorb);
+          fx.wealth = fx.wealth - saved;
+          absorbedNote = ` <span class="odds better">Your family absorbed $${Math.abs(saved).toLocaleString()} of this.</span>`;
+        } else {
+          absorbedNote = ` <span class="odds worse">You absorb all of this yourself.</span>`;
+        }
+      }
+      applyEffects(fx);
+      setFlags(out.flags_set);
+      say(`<strong>${esc(ev.label)}.</strong> ${esc(out.text)}${absorbedNote}`, 'event');
+    }
 
     renderStats();
-    postTurnRisks();
+    checkDeath();
     save();
-    presentTurnChoices();
   }
 
-  // Export / New game / Create
-  exportBtn?.addEventListener('click',()=>{ if(!character) return; const obj={ name:character.name,race:character.race,age:character.age,health:character.health,wealth:character.wealth,acad:character.academicPerformance,addiction:character.addiction,flags:character.flags,timeline:character.memory.timeline }; const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`${character.name}_summary.json`; a.click(); URL.revokeObjectURL(url); });
-  newGameBtn?.addEventListener('click',()=>{ if(confirm('Start a new game?')){ localStorage.clear(); location.reload(); }});
+  function checkDeath() {
+    if (ch.health <= 0) {
+      say(`<strong>${esc(ch.name)} dies at ${ch.age}.</strong>`, 'beat major');
+      summarize();
+      el.ageUpBtn.disabled = true;
+      el.tabBar.classList.add('disabled');
+    }
+  }
 
-  createCharacterBtn?.addEventListener('click',()=>{
-    const nm=(nameInput.value||'Frank').trim(); const race=raceSelect.value||'black';
-    character=createBaseCharacter(nm,race);
-    rng=mulberry32((Date.now()&0xffffffff)^(character.multipliers.seedOffset||0));
-    creationScreen.classList.add('hidden'); gameContainer.classList.remove('hidden'); storyContainer.innerHTML=''; renderStats(); save();
-    runChildhoodPhases();
+  function summarize() {
+    const id = D.identities[ch.identity];
+    let h = '<h4>Final</h4><table class="cond">';
+    h += `<tr><td>Age</td><td>${ch.age}</td></tr>`;
+    h += `<tr><td>Net worth</td><td>$${Math.round(ch.wealth - ch.debt).toLocaleString()}</td></tr>`;
+    h += `<tr><td>Education</td><td>${esc(ch.flags.education || 'none')}</td></tr>`;
+    h += `<tr><td>Record</td><td>${ch.flags.record ? 'yes' : 'no'}</td></tr>`;
+    h += '</table>';
+    h += `<p class="dim">You were assigned a ${esc(D.circumstance.schoolFunding.levelLabels[ch.circumstance.schoolFunding].toLowerCase())} school district, a ${esc(D.circumstance.household.levelLabels[ch.circumstance.household].toLowerCase())} household, and ${esc(D.circumstance.familySupport.levelLabels[ch.circumstance.familySupport].toLowerCase())}. Your applications were screened at ${id.callbackMultiplier.toFixed(2)}× throughout.</p>`;
+    say(h, 'beat');
+  }
+
+  // ── Rendering ────────────────────────────────────────────────────────────
+  // Bars scale on the compositor rather than animating width.
+  function setBar(node, value0to100) {
+    const v = Math.max(0, Math.min(100, value0to100));
+    node.style.transform = 'scaleX(' + (v / 100) + ')';
+  }
+
+  function renderStats() {
+    if (!ch) return;
+    el.statAge.textContent = ch.age;
+    el.statHealth.textContent = Math.round(ch.health);
+    el.statWealth.textContent = '$' + Math.round(ch.wealth).toLocaleString();
+    const smarts = Math.max(0, Math.min(100, 50 + ch.academicPerformance * 2));
+    el.statSmarts.textContent = Math.round(smarts);
+    setBar(el.barHealth, ch.health);
+    setBar(el.barSmarts, smarts);
+
+    if (ch.addiction > 0) {
+      el.addictionRow.classList.remove('hidden');
+      el.statAddiction.textContent = Math.round(ch.addiction);
+      setBar(el.barAddiction, ch.addiction);
+    } else {
+      el.addictionRow.classList.add('hidden');
+    }
+
+    el.charName.textContent = ch.name;
+    const bits = [D.identities[ch.identity].label];
+    if (ch.salary > 0) bits.push(D.jobs[ch.job].title + ' · $' + ch.salary.toLocaleString());
+    if (ch.flags.education) bits.push(String(ch.flags.education).replace(/_/g, ' '));
+    if (ch.flags.record) bits.push('record');
+    if (ch.debt > 0) bits.push('$' + Math.round(ch.debt).toLocaleString() + ' debt');
+    el.charSub.textContent = bits.join(' · ');
+  }
+
+  // ── Action sheet ─────────────────────────────────────────────────────────
+  const CATEGORIES = [
+    { key: 'school', label: 'School' },
+    { key: 'work', label: 'Work' },
+    { key: 'money', label: 'Money' },
+    { key: 'housing', label: 'Housing' },
+    { key: 'health', label: 'Health' },
+    { key: 'substance', label: 'Substance' },
+    { key: 'justice', label: 'Justice' },
+    { key: 'network', label: 'People' }
+  ];
+
+  function openSheet(catKey) {
+    const cat = CATEGORIES.find((c) => c.key === catKey);
+    el.sheetTitle.textContent = cat.label;
+    const items = Object.entries(D.actions).filter(([, a]) => a.category === catKey);
+
+    el.actionList.innerHTML = '';
+    let anyEligible = false;
+
+    for (const [id, a] of items) {
+      const ok = eligible(a);
+      if (ok) anyEligible = true;
+      const b = document.createElement('button');
+      b.className = 'action' + (ok ? '' : ' locked');
+      b.disabled = !ok;
+
+      let sub = '';
+      if (ok) {
+        const { m } = biasFor(a);
+        if (Math.abs(m - 1) > 0.02) {
+          const w = tilt(a.outcomes, m);
+          const cls = w[0] < a.outcomes[0].chance ? 'worse' : 'better';
+          sub = `<span class="odds-chip ${cls}">${pct(w[0])} best case &middot; ${pct(a.outcomes[0].chance)} unbiased</span>`;
+        } else {
+          sub = `<span class="odds-chip">${pct(a.outcomes[0].chance)} best case</span>`;
+        }
+        if (a.cost && a.cost.wealth) sub += `<span class="cost-chip">-$${a.cost.wealth}</span>`;
+      } else {
+        sub = `<span class="odds-chip dim">${esc(lockReason(a))}</span>`;
+      }
+
+      b.innerHTML = `<span class="action-label">${esc(a.label)}</span>${sub}`;
+      if (ok) b.onclick = () => doAction(id);
+      el.actionList.appendChild(b);
+    }
+
+    if (!items.length || !anyEligible) {
+      const p = document.createElement('p');
+      p.className = 'dim pad';
+      p.textContent = 'Nothing available here yet.';
+      el.actionList.appendChild(p);
+    }
+
+    el.actionSheet.classList.add('open');
+  }
+
+  function lockReason(a) {
+    const r = a.requires || {};
+    if (r.age_min !== undefined && ch.age < r.age_min) return `from age ${r.age_min}`;
+    if (r.age_max !== undefined && ch.age > r.age_max) return `no longer available`;
+    if (r.wealth_min !== undefined && ch.wealth < r.wealth_min) return `needs $${r.wealth_min.toLocaleString()}`;
+    if (r.addiction_min !== undefined && ch.addiction < r.addiction_min) return `not applicable`;
+    if (r.apAccess && !effectsFor('schoolFunding').apAccess) return `your school does not offer this`;
+    if (r.job_not && r.job_not.includes(ch.job)) return `you already hold this or better`;
+    if (r.flags_any) return 'needs schooling, a trade, or service first';
+    return 'requirements not met';
+  }
+
+  function closeSheet() { el.actionSheet.classList.remove('open'); }
+
+  function buildTabs() {
+    el.tabBar.innerHTML = '';
+    for (const c of CATEGORIES) {
+      const b = document.createElement('button');
+      b.className = 'tab';
+      b.dataset.cat = c.key;
+      b.innerHTML = `<span class="tab-icon" data-icon="${c.key}"></span><span class="tab-label">${c.label}</span>`;
+      b.onclick = () => openSheet(c.key);
+      el.tabBar.appendChild(b);
+    }
+  }
+
+  // ── Lives counter ────────────────────────────────────────────────────────
+  // Seeded at 200 and incremented per life started.
+  //
+  // NOTE: this is per-device, not global — it reads and writes localStorage,
+  // so two people each see their own count on top of the same seed. Making it
+  // genuinely universal needs somewhere shared to keep the number; the two
+  // functions below are the only places that would have to change.
+  const LIVES_KEY = 'cyoa.lives';
+  const LIVES_SEED = 200;
+
+  function readLives() {
+    try {
+      const n = parseInt(localStorage.getItem(LIVES_KEY) || '0', 10);
+      return LIVES_SEED + (Number.isFinite(n) && n > 0 ? n : 0);
+    } catch (e) { return LIVES_SEED; }
+  }
+
+  function bumpLives() {
+    try {
+      const n = parseInt(localStorage.getItem(LIVES_KEY) || '0', 10);
+      localStorage.setItem(LIVES_KEY, String((Number.isFinite(n) ? n : 0) + 1));
+    } catch (e) { /* storage unavailable; the seed still shows */ }
+    renderLives();
+  }
+
+  function renderLives() {
+    if (el.livesCount) el.livesCount.textContent = readLives().toLocaleString() + '+';
+  }
+
+  // ── Persistence ──────────────────────────────────────────────────────────
+  function save() {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ ch, feed: el.feed.innerHTML }));
+    } catch (e) { /* storage unavailable; play continues unsaved */ }
+  }
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      if (!parsed.ch) return false;
+      ch = parsed.ch;
+      rng = mulberry32(ch.seed ^ (ch.timeline.length * 104729));
+      el.feed.innerHTML = parsed.feed || '';
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // ── Boot ─────────────────────────────────────────────────────────────────
+  function enterGame() {
+    el.creation.classList.add('hidden');
+    el.game.classList.remove('hidden');
+    buildTabs();
+    renderStats();
+    renderConditions();
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    cacheDom();
+
+    // Populate identity picker from data
+    el.identitySelect.innerHTML = '';
+    for (const [k, v] of Object.entries(D.identities)) {
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = v.label;
+      el.identitySelect.appendChild(o);
+    }
+
+    renderLives();
+
+    el.startBtn.addEventListener('click', () => {
+      const name = (el.nameInput.value || 'Frank').trim();
+      createCharacter(name, el.identitySelect.value);
+      bumpLives();
+      el.feed.innerHTML = '';
+      enterGame();
+      runChildhood();
+    });
+
+    el.resetBtn.addEventListener('click', () => {
+      if (confirm('Start over? This erases the current life.')) {
+        localStorage.removeItem(SAVE_KEY);
+        location.reload();
+      }
+    });
+
+    el.ageUpBtn.addEventListener('click', ageUp);
+    el.closeSheet.addEventListener('click', closeSheet);
+    el.actionSheet.addEventListener('click', (e) => { if (e.target === el.actionSheet) closeSheet(); });
+
+    el.conditionsBtn.addEventListener('click', () => {
+      renderConditions();
+      el.conditionsPanel.classList.add('open');
+    });
+    el.closeConditions.addEventListener('click', () => el.conditionsPanel.classList.remove('open'));
+    el.conditionsPanel.addEventListener('click', (e) => {
+      if (e.target === el.conditionsPanel) el.conditionsPanel.classList.remove('open');
+    });
+
+    el.exportBtn.addEventListener('click', () => {
+      if (!ch) return;
+      const blob = new Blob([JSON.stringify(ch, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${ch.name.replace(/\s+/g, '_')}_life.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closeSheet(); el.conditionsPanel.classList.remove('open'); }
+    });
+
+    if (load()) { enterGame(); } else { el.creation.classList.remove('hidden'); }
   });
-
-  if(!load()) { creationScreen.classList.remove('hidden'); gameContainer.classList.add('hidden'); } else { inputArea.style.display='block'; presentTurnChoices(); }
-
-  sendButton?.addEventListener('click',()=>{ const txt=(userInput.value||'').toLowerCase(); userInput.value=''; const map={ 'college':'apply_state_university', 'community':'apply_community_college', 'job':'take_entry_job', 'apprentice':'join_union_apprentice', 'loan':'take_student_loan', 'mentor':'seek_mentor', 'police':'stop_and_frisk', 'health':'health_crisis', 'housing':'face_housing_shock', 'invest':'save_and_invest', 'rehab':'seek_rehab', 'diversion':'diversion_program', 'expunge':'record_expungement', 'probation':'probation_checkin', 'substance':'experiment_substance', 'theft':'petty_offense_steal'}; const key=Object.keys(map).find(k=>txt.includes(k)); if(key){ resolveAction(map[key]); } else { append('Try: college, community, job, apprentice, loan, mentor, police, health, housing, invest, rehab, diversion, expunge, probation, substance, theft.','ai-text event-text'); } });
-});
+})();

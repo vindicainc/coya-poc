@@ -3,91 +3,132 @@
 <head>
   <meta charset="utf-8" />
   <title>Choose Your American Adventure</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 0; background:#0e0e11; color:#f3f3f7; }
-    header { padding: 16px 20px; background:#15151b; border-bottom:1px solid #262635; }
-    .wrap { max-width: 960px; margin: 0 auto; padding: 20px; }
-    .row { display: grid; grid-template-columns: 1fr 320px; gap: 16px; }
-    #story-container { height: 60vh; overflow:auto; padding:12px; background:#12121a; border:1px solid #262635; border-radius:12px; }
-    .ai-text { margin: 12px 0; line-height: 1.5; }
-    .event-text { background:#171722; padding:8px 10px; border-radius:10px; border:1px solid #2a2a3a; }
-    #choice-container { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
-    .choice-btn { background:#2c2c48; color:#fff; border:1px solid #3b3b5a; padding:8px 10px; border-radius:10px; cursor:pointer; }
-    .choice-btn:hover { background:#3a3a5f; }
-    .panel { background:#12121a; border:1px solid #262635; border-radius:12px; padding:12px; }
-    .stat { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px dashed #2a2a3a; }
-    .stat:last-child { border-bottom:none; }
-    .hidden { display:none; }
-    label { display:block; margin:10px 0 6px; }
-    input, select { width:100%; padding:8px; border-radius:8px; border:1px solid #2a2a3a; background:#0e0e14; color:#fff; }
-    button { background:#3a3a5f; color:#fff; border:1px solid #4b4b75; border-radius:10px; padding:10px 14px; cursor:pointer; }
-    button:hover { background:#4a4a78; }
-    #input-area { display:none; margin-top:10px; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="A life simulator about which parts of an outcome were chosen and which were assigned." />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <div class="wrap">
-      <strong>Choose Your American Adventure</strong>
-    </div>
-  </header>
 
-  <div class="wrap">
+  <div class="phone">
 
-    <!-- Character creation -->
-    <div id="character-creation" class="panel">
-      <h2>New Game</h2>
-      <label for="name-input">Name</label>
-      <input id="name-input" placeholder="Frank" />
+    <!-- ══ CHARACTER CREATION ══════════════════════════════════════════════ -->
+    <section id="creation" class="screen">
+      <div class="creation-inner">
+        <h1>Choose Your<br>American Adventure</h1>
+        <p class="tagline">A life runs from birth to whenever it stops. Some of it you pick.</p>
 
-      <label for="race-select">Background</label>
-      <select id="race-select">
-        <option value="black">Black</option>
-        <option value="white">White</option>
-        <option value="hispanic">Hispanic</option>
-        <option value="asian">Asian</option>
-        <option value="low_income">Low income</option>
-      </select>
+        <label for="nameInput">Name</label>
+        <input id="nameInput" placeholder="Frank" autocomplete="off" />
 
-      <div style="margin-top:12px; display:flex; gap:10px;">
-        <!-- IMPORTANT: id must be create-character-btn -->
-        <button id="create-character-btn">Start Game</button>
-        <button id="new-game-btn">Reset</button>
+        <label for="identitySelect">Identity</label>
+        <select id="identitySelect"></select>
+
+        <p class="fineprint">
+          Identity here changes only how other people treat you &mdash; callback rates,
+          stop rates, how a record is weighed. Your school district, household income,
+          neighborhood and family cushion are <em>rolled</em> from distributions, and the
+          simulation will show you every roll and what it would have been otherwise.
+        </p>
+
+        <button id="startBtn" class="primary">Begin</button>
+        <button id="resetBtn" class="ghost">Erase saved life</button>
+
+        <div class="counter">
+          <span class="tab-icon" data-icon="age"></span>
+          <span><strong id="livesCount">200+</strong> lives lived</span>
+        </div>
+
+        <p class="credit">
+          Built by <strong>Patrick Kim</strong><br>
+          Governor's Academy, Class of 2027
+        </p>
+      </div>
+    </section>
+
+    <!-- ══ GAME ════════════════════════════════════════════════════════════ -->
+    <section id="game" class="screen hidden">
+
+      <header class="hud">
+        <div class="hud-top">
+          <div class="who">
+            <div id="charName" class="who-name">—</div>
+            <div id="charSub" class="who-sub">—</div>
+          </div>
+          <button id="conditionsBtn" class="cond-btn" title="What was assigned to you">
+            <span class="tab-icon" data-icon="conditions"></span>
+          </button>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <span class="stat-icon" data-icon="age"></span>
+            <span class="stat-key">Age</span>
+            <span id="statAge" class="stat-val">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-icon" data-icon="money"></span>
+            <span class="stat-key">Money</span>
+            <span id="statWealth" class="stat-val">$0</span>
+          </div>
+        </div>
+
+        <div class="bars">
+          <div class="bar-row">
+            <span class="stat-icon" data-icon="health"></span>
+            <div class="bar"><i id="barHealth" class="fill health"></i></div>
+            <span id="statHealth" class="bar-val">100</span>
+          </div>
+          <div class="bar-row">
+            <span class="stat-icon" data-icon="smarts"></span>
+            <div class="bar"><i id="barSmarts" class="fill smarts"></i></div>
+            <span id="statSmarts" class="bar-val">50</span>
+          </div>
+          <div id="addictionRow" class="bar-row hidden">
+            <span class="stat-icon" data-icon="substance"></span>
+            <div class="bar"><i id="barAddiction" class="fill addiction"></i></div>
+            <span id="statAddiction" class="bar-val">0</span>
+          </div>
+        </div>
+      </header>
+
+      <main id="feed" class="feed"></main>
+
+      <footer class="dock">
+        <button id="ageUpBtn" class="age-btn">
+          <span class="tab-icon" data-icon="age"></span>
+          <span>Age Up</span>
+        </button>
+        <nav id="tabBar" class="tabs"></nav>
+        <button id="exportBtn" class="ghost small">Export this life as JSON</button>
+      </footer>
+
+    </section>
+
+    <!-- ══ ACTION SHEET ════════════════════════════════════════════════════ -->
+    <div id="actionSheet" class="sheet">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h3 id="sheetTitle">Actions</h3>
+          <button id="closeSheet" class="x">&times;</button>
+        </div>
+        <div id="actionList" class="action-list"></div>
       </div>
     </div>
 
-    <!-- Game -->
-    <div id="game-container" class="hidden">
-      <div class="row">
-        <div>
-          <div id="story-container" class="panel"></div>
-          <div id="choice-container"></div>
-
-          <div id="input-area">
-            <label for="user-input">Type a shortcut (e.g. “job”, “college”, “substance”, “rehab”)</label>
-            <div style="display:flex; gap:8px;">
-              <input id="user-input" placeholder="job / college / apprentice / loan / mentor / police / health / housing / invest / rehab / diversion / expunge / probation / substance / theft" />
-              <button id="send-button">Go</button>
-            </div>
-          </div>
+    <!-- ══ CONDITIONS PANEL ════════════════════════════════════════════════ -->
+    <div id="conditionsPanel" class="sheet">
+      <div class="sheet-inner tall">
+        <div class="sheet-head">
+          <h3>Your conditions</h3>
+          <button id="closeConditions" class="x">&times;</button>
         </div>
-
-        <div class="panel">
-          <h3>Stats</h3>
-          <div class="stat"><span>Age</span><strong id="stat-age">—</strong></div>
-          <div class="stat"><span>Health</span><strong id="stat-health">—</strong></div>
-          <div class="stat"><span>Wealth</span><strong id="stat-wealth">—</strong></div>
-          <div style="margin-top:12px; display:flex; gap:8px;">
-            <button id="export-btn">Export Summary</button>
-          </div>
-        </div>
+        <div id="conditionsBody" class="conditions-body"></div>
       </div>
     </div>
 
   </div>
 
-  <!-- Load data BEFORE the engine so GAME_DATA exists -->
+  <!-- data must load before the engine -->
   <script src="data.js"></script>
   <script src="script.js"></script>
 </body>
