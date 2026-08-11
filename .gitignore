@@ -1,0 +1,27 @@
+# Secrets — this repo is PUBLIC. Nothing below may ever be committed.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.json
+.netlify/state.json
+
+# Netlify CLI writes env material into these when linked or running dev.
+.netlify/
+.netlify-cache/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local scratch
+_shot.html
+*.local.*
