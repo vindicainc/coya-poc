@@ -276,6 +276,11 @@
       renderStats();
     }
 
+    // Childhood drift is the household's finances, not the child's. A minor
+    // does not leave home carrying a negative balance; what a squeezed
+    // household costs them is already priced into schooling and health.
+    if (ch.wealth < 0) ch.wealth = 0;
+
     ch.age = 18;
     ch.childhoodDone = true;
     say('You turn eighteen. Everything above is now simply your record, and nobody who reads it will see any of the context.', 'beat major');
