@@ -404,6 +404,86 @@ button {
 .dim    { color: var(--ink-faint); }
 .pad    { padding: 16px; }
 
+/* ── Decision card ────────────────────────────────────────────────────────── */
+/* The main question, sitting in the story rather than behind a menu. */
+.decision {
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--r);
+  padding: 16px 14px 14px;
+  margin-top: 4px;
+}
+.decision h3 {
+  margin: 0 0 6px;
+  font-family: var(--pixel);
+  font-size: 16px;
+  letter-spacing: 0.01em;
+}
+.decision-sub {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-dim);
+}
+.decision-options { display: flex; flex-direction: column; gap: 8px; }
+
+.decision-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 13px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  transition: border-color 0.15s, background 0.15s;
+}
+.decision-option:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.decision-option.locked { opacity: 0.5; cursor: not-allowed; }
+.decision-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.decision-text strong { font-size: 14.5px; font-weight: 600; }
+.decision-text small {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+.decision-option.locked .decision-text small { color: var(--bad); opacity: 0.85; }
+
+.decision-back {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+.decision-back:hover { color: var(--ink-dim); }
+
+/* ── AI narration ─────────────────────────────────────────────────────────── */
+.entry.ai-text {
+  font-style: italic;
+  color: var(--ink-dim);
+  border-color: var(--line-soft);
+}
+.ai-pending { display: flex; align-items: center; justify-content: center; padding: 14px; }
+.ai-dots { display: inline-flex; gap: 5px; }
+.ai-dots i {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--ink-faint);
+  animation: aiblink 1.2s infinite ease-in-out;
+}
+.ai-dots i:nth-child(2) { animation-delay: 0.15s; }
+.ai-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes aiblink {
+  0%, 80%, 100% { opacity: 0.25; }
+  40%           { opacity: 1; }
+}
+
 /* ── Dock ─────────────────────────────────────────────────────────────────── */
 .dock {
   flex: 0 0 auto;
@@ -431,11 +511,31 @@ button {
 .age-btn:active:not(:disabled) { transform: translateY(1px); }
 .age-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
+.age-btn.waiting {
+  background: var(--panel-2);
+  color: var(--ink-faint);
+  border: 1px solid var(--line);
+}
+
+.more-btn {
+  width: 100%;
+  padding: 9px;
+  margin-bottom: 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+.more-btn:hover { color: var(--ink-dim); border-color: var(--ink-faint); }
+.more-btn .chev { display: inline-block; transition: transform 0.18s ease; }
+.more-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+
 .tabs {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 6px;
 }
+.tabs.collapsed { display: none; }
 .tabs.disabled { opacity: 0.35; pointer-events: none; }
 
 .tab {

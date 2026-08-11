@@ -1,12 +1,22 @@
-# Static site. No build step, no functions, no server-side code.
+# Static site plus one function.
 #
-# The functions directory was removed deliberately: it contained a single
-# unauthenticated Gemini proxy that forwarded any POST body straight to the
-# model on a server-side key. Nothing called it. If AI is added back later it
-# needs auth and a rate limit before it goes near production.
+# The previous functions directory held an unauthenticated Gemini proxy that
+# forwarded any POST body straight to the model. Its replacement, narrate.js,
+# accepts structured game state only and builds the prompt server-side — a
+# caller cannot supply prompt text, so it cannot be used as a free LLM.
+# Keep that property if you extend it.
 
 [build]
   publish = "."
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/narrate"
+  to = "/.netlify/functions/narrate"
+  status = 200
 
 [[headers]]
   for = "/*"

@@ -17,5 +17,8 @@
   "bugs": {
     "url": "https://github.com/seongwonkc/coya-poc/issues"
   },
-  "homepage": "https://github.com/seongwonkc/coya-poc#readme"
+  "homepage": "https://github.com/seongwonkc/coya-poc#readme",
+  "dependencies": {
+    "@google/genai": "^1.0.0"
+  }
 }

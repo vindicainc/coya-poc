@@ -40,7 +40,7 @@
       'sheetTitle', 'closeSheet', 'tabBar', 'statAge', 'statHealth',
       'statWealth', 'statSmarts', 'statAddiction', 'barHealth', 'barSmarts',
       'barAddiction', 'charName', 'charSub', 'conditionsPanel', 'conditionsBody',
-      'conditionsBtn', 'closeConditions', 'addictionRow', 'livesCount'
+      'conditionsBtn', 'closeConditions', 'addictionRow', 'livesCount', 'moreBtn'
     ].forEach((k) => { el[k] = $(k); });
   }
 
@@ -280,7 +280,64 @@
     ch.childhoodDone = true;
     say('You turn eighteen. Everything above is now simply your record, and nobody who reads it will see any of the context.', 'beat major');
     renderStats();
+    openStage(18);
     save();
+  }
+
+  // ── Life stages ──────────────────────────────────────────────────────────
+  // A gate returns { open: true } or { open: false, why: "..." }. The "why" is
+  // shown on the locked option — a closed door with a stated reason carries the
+  // argument better than an option that simply isn't there.
+
+  const STAGE_GATES = {
+    always: () => ({ open: true }),
+
+    militaryEligible() {
+      if (ch.flags.record) {
+        return { open: false, why: 'a criminal record disqualifies you at the recruiter' };
+      }
+      if (ch.health < 45) {
+        return { open: false, why: 'you would not pass the medical screening' };
+      }
+      return { open: true };
+    },
+
+    // Elite admission is the genuinely gated one. The AP clause is the sharper
+    // barrier and the more accurate one: you cannot be denied a course your
+    // school never offered, but the application still reads the absence as you.
+    eliteEligible() {
+      const ap = ch.academicPerformance;
+      if (!effectsFor('schoolFunding').apAccess && ap < 2) {
+        return { open: false, why: 'your school offered no AP or honours courses, and the application reads that as you' };
+      }
+      if (ap < -4) {
+        return { open: false, why: `your transcript is not competitive here (${apLabel(ap)})` };
+      }
+      return { open: true };
+    },
+
+    // State universities are broadly accessible. A weak transcript is a
+    // headwind on the odds, not a locked door — only the floor is a wall.
+    stateEligible() {
+      const ap = ch.academicPerformance;
+      if (ap < -12) {
+        return { open: false, why: `your transcript falls below the admissions floor (${apLabel(ap)})` };
+      }
+      return { open: true };
+    }
+  };
+
+  function apLabel(ap) {
+    if (ap >= 6) return 'strong transcript';
+    if (ap >= 1) return 'solid transcript';
+    if (ap >= -6) return 'mixed transcript';
+    return 'weak transcript';
+  }
+
+  function checkGate(name) {
+    if (!name) return { open: true };
+    const g = STAGE_GATES[name];
+    return g ? g() : { open: true };
   }
 
   // ── Odds machinery ───────────────────────────────────────────────────────
@@ -469,6 +526,7 @@
 
   // ── Age up: the BitLife loop ─────────────────────────────────────────────
   function ageUp() {
+    if (ch.pendingStage) return;   // a decision is outstanding
     ch.age++;
     say(`<span class="age-tag age-major">Age ${ch.age}</span>`, 'year');
 
@@ -622,6 +680,10 @@
 
     renderStats();
     checkDeath();
+
+    // A new stage may open at this age
+    if (D.stages[ch.age] && ch.health > 0) openStage(ch.age);
+
     save();
   }
 
@@ -678,6 +740,168 @@
     if (ch.flags.record) bits.push('record');
     if (ch.debt > 0) bits.push('$' + Math.round(ch.debt).toLocaleString() + ' debt');
     el.charSub.textContent = bits.join(' · ');
+  }
+
+  // ── Stage decisions ──────────────────────────────────────────────────────
+  // Rendered inline in the feed, not in a sheet: this is the main thing being
+  // asked, so it should sit in the story rather than behind a menu.
+
+  function openStage(age) {
+    const stage = D.stages[age];
+    if (!stage) return;
+    ch.pendingStage = age;
+    ch.pendingExpand = null;
+    renderStage();
+    save();
+  }
+
+  function renderStage() {
+    const stage = D.stages[ch.pendingStage];
+    if (!stage) return;
+
+    // Never leave two decision cards in the feed
+    const old = el.feed.querySelector('.decision');
+    if (old) old.remove();
+
+    const card = document.createElement('div');
+    card.className = 'decision';
+
+    if (ch.pendingExpand === 'collegeTiers') {
+      card.innerHTML =
+        `<h3>Which college?</h3>
+         <p class="decision-sub">Where you can go was largely decided before you applied.</p>`;
+      const list = document.createElement('div');
+      list.className = 'decision-options';
+      for (const tier of D.collegeTiers) {
+        list.appendChild(optionButton({
+          label: tier.label,
+          blurb: oddsBlurb(tier),
+          icon: 'school',
+          gate: checkGate(tier.gate),
+          onPick: () => resolveCollegeTier(tier.id)
+        }));
+      }
+      card.appendChild(list);
+      const back = document.createElement('button');
+      back.className = 'decision-back';
+      back.textContent = '← Back';
+      back.onclick = () => { ch.pendingExpand = null; renderStage(); save(); };
+      card.appendChild(back);
+    } else {
+      card.innerHTML =
+        `<h3>${esc(stage.title)}</h3>
+         <p class="decision-sub">${esc(stage.prompt)}</p>`;
+      const list = document.createElement('div');
+      list.className = 'decision-options';
+      for (const opt of stage.options) {
+        list.appendChild(optionButton({
+          label: opt.label,
+          blurb: opt.blurb,
+          icon: opt.icon,
+          gate: checkGate(opt.gate),
+          onPick: () => pickStageOption(opt)
+        }));
+      }
+      card.appendChild(list);
+    }
+
+    el.feed.appendChild(card);
+    el.feed.scrollTop = el.feed.scrollHeight;
+    syncLock();
+  }
+
+  function optionButton({ label, blurb, icon, gate, onPick }) {
+    const b = document.createElement('button');
+    b.className = 'decision-option' + (gate.open ? '' : ' locked');
+    b.disabled = !gate.open;
+    b.innerHTML =
+      `<span class="tab-icon" data-icon="${icon || 'age'}"></span>
+       <span class="decision-text">
+         <strong>${esc(label)}</strong>
+         <small>${gate.open ? esc(blurb || '') : esc('Closed — ' + gate.why)}</small>
+       </span>`;
+    if (gate.open) b.onclick = onPick;
+    return b;
+  }
+
+  // Best-case odds for a college tier, with the bias applied and stated.
+  function oddsBlurb(tier) {
+    const pseudo = { tags: ['college'], mods: { academicPerformance: 1, familySupport: 1 } };
+    const { m } = biasFor(pseudo);
+    const w = tilt(tier.outcomes, m);
+    const base = tier.outcomes[0].chance;
+    const cost = tier.cost && tier.cost.wealth ? ` · $${tier.cost.wealth} to apply` : '';
+    if (Math.abs(m - 1) > 0.02) {
+      return `${pct(w[0])} best case (unbiased ${pct(base)})${cost}`;
+    }
+    return `${pct(base)} best case${cost}`;
+  }
+
+  function pickStageOption(opt) {
+    if (opt.expands) {
+      ch.pendingExpand = opt.expands;
+      renderStage();
+      save();
+      return;
+    }
+    const r = opt.resolve || {};
+    if (r.setJob) setJob(r.setJob);
+    if (r.flags) setFlags(r.flags);
+    if (typeof r.health === 'number') ch.health += r.health;
+
+    clearStage();
+    say(`<span class="age-tag">Age ${ch.age}</span> <strong>${esc(opt.label)}.</strong> ${esc(r.text || '')}`, 'action');
+    narrateStage(opt.id, opt.label, r.text || '');
+    renderStats();
+    save();
+  }
+
+  function resolveCollegeTier(tierId) {
+    const tier = D.collegeTiers.find((t) => t.id === tierId);
+    if (!tier) return;
+    if (tier.cost && tier.cost.wealth) ch.wealth -= tier.cost.wealth;
+
+    const pseudo = { tags: ['college'], mods: { academicPerformance: 1, familySupport: 1 } };
+    const { m, why } = biasFor(pseudo);
+    const base = tier.outcomes.map((o) => o.chance);
+    const weights = tilt(tier.outcomes, m);
+    const out = tier.outcomes[pickOutcome(tier.outcomes, weights)];
+
+    applyEffects(out.effects);
+    setFlags(out.flags_set);
+
+    let html = `<span class="age-tag">Age ${ch.age}</span> <strong>${esc(tier.label)}.</strong> ${esc(out.text)}`;
+    if (Math.abs(m - 1) > 0.02) {
+      const dir = weights[0] < base[0] ? 'worse' : 'better';
+      html += `<div class="odds ${dir}">Best outcome: <strong>${pct(weights[0])}</strong>` +
+              ` &middot; unbiased it would have been <strong>${pct(base[0])}</strong>`;
+      if (why.length) html += `<br><small>${esc(why.join('; '))}</small>`;
+      html += '</div>';
+    }
+
+    clearStage();
+    say(html, 'action');
+    narrateStage('college_' + tierId, tier.label, out.text);
+    renderStats();
+    save();
+  }
+
+  function clearStage() {
+    const old = el.feed.querySelector('.decision');
+    if (old) old.remove();
+    ch.pendingStage = null;
+    ch.pendingExpand = null;
+    syncLock();
+  }
+
+  // Age Up is disabled while a decision is outstanding.
+  function syncLock() {
+    const locked = !!ch && !!ch.pendingStage;
+    el.ageUpBtn.disabled = locked || (ch && ch.health <= 0);
+    el.tabBar.classList.toggle('disabled', locked);
+    el.ageUpBtn.classList.toggle('waiting', locked);
+    const lbl = el.ageUpBtn.querySelector('span:last-child');
+    if (lbl) lbl.textContent = locked ? 'Choose above first' : 'Age Up';
   }
 
   // ── Action sheet ─────────────────────────────────────────────────────────
@@ -763,6 +987,84 @@
     }
   }
 
+  // ── AI narration ─────────────────────────────────────────────────────────
+  // The engine has already decided what happened before any of this runs. The
+  // model only writes the scene describing a settled outcome — it never picks
+  // an outcome, never sees a probability, and never changes a stat. If the call
+  // fails, is slow, or is disabled, play continues on the deterministic text.
+
+  const AI_ENDPOINT = '/api/narrate';
+  let aiEnabled = true;      // flipped off after repeated failures
+  let aiFailures = 0;
+
+  function narrateStage(choiceId, label, resolvedText) {
+    narrate({
+      kind: 'stage_choice',
+      choice: choiceId,
+      label,
+      resolved: resolvedText
+    });
+  }
+
+  // Posts STRUCTURED STATE ONLY — never a caller-supplied prompt. The function
+  // builds the prompt server-side from these fields.
+  async function narrate(payload) {
+    if (!aiEnabled) return;
+
+    const slot = document.createElement('div');
+    slot.className = 'entry beat ai-pending';
+    slot.innerHTML = '<span class="ai-dots"><i></i><i></i><i></i></span>';
+    el.feed.appendChild(slot);
+    el.feed.scrollTop = el.feed.scrollHeight;
+
+    const body = {
+      kind: payload.kind,
+      choice: payload.choice || null,
+      label: payload.label || null,
+      resolved: payload.resolved || null,
+      name: ch.name,
+      age: ch.age,
+      identity: D.identities[ch.identity].label,
+      circumstance: {
+        schoolFunding: ch.circumstance.schoolFunding,
+        household: ch.circumstance.household,
+        neighborhood: ch.circumstance.neighborhood,
+        familySupport: ch.circumstance.familySupport,
+        healthCoverage: ch.circumstance.healthCoverage
+      },
+      job: ch.job,
+      hasRecord: !!ch.flags.record,
+      education: ch.flags.education || null
+    };
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+
+    try {
+      const res = await fetch(AI_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (!data.text) throw new Error('empty');
+
+      aiFailures = 0;
+      slot.classList.remove('ai-pending');
+      slot.classList.add('ai-text');
+      slot.innerHTML = esc(data.text);
+    } catch (e) {
+      clearTimeout(timer);
+      slot.remove();                       // fail soft, silently
+      if (++aiFailures >= 3) aiEnabled = false;
+    } finally {
+      el.feed.scrollTop = el.feed.scrollHeight;
+    }
+  }
+
   // ── Lives counter ────────────────────────────────────────────────────────
   // Seeded at 200 and incremented per life started.
   //
@@ -795,8 +1097,17 @@
   // ── Persistence ──────────────────────────────────────────────────────────
   function save() {
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ ch, feed: el.feed.innerHTML }));
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ ch, feed: serializeFeed() }));
     } catch (e) { /* storage unavailable; play continues unsaved */ }
+  }
+
+  // Transient UI must not be persisted. An in-flight narration spinner saved
+  // mid-request would be restored on reload as a spinner that never resolves,
+  // and the decision card is rebuilt from ch.pendingStage rather than markup.
+  function serializeFeed() {
+    const clone = el.feed.cloneNode(true);
+    clone.querySelectorAll('.ai-pending, .decision').forEach((n) => n.remove());
+    return clone.innerHTML;
   }
 
   function load() {
@@ -819,9 +1130,14 @@
     buildTabs();
     renderStats();
     renderConditions();
+    // A decision saved mid-flight is re-rendered rather than lost
+    if (ch && ch.pendingStage) renderStage(); else syncLock();
   }
 
+  let booted = false;
   document.addEventListener('DOMContentLoaded', () => {
+    if (booted) return;   // a second DOMContentLoaded must not re-init over live state
+    booted = true;
     cacheDom();
 
     // Populate identity picker from data
@@ -852,6 +1168,11 @@
     });
 
     el.ageUpBtn.addEventListener('click', ageUp);
+
+    el.moreBtn.addEventListener('click', () => {
+      const open = el.tabBar.classList.toggle('collapsed') === false;
+      el.moreBtn.setAttribute('aria-expanded', String(open));
+    });
     el.closeSheet.addEventListener('click', closeSheet);
     el.actionSheet.addEventListener('click', (e) => { if (e.target === el.actionSheet) closeSheet(); });
 

@@ -286,6 +286,93 @@ window.GAME_DATA = {
   },
 
   // ===========================================================================
+  // LIFE STAGES — the focused decision points
+  // ===========================================================================
+  // At a stage age the game stops and asks ONE question with a small number of
+  // answers. Ageing is blocked until it is answered. This is deliberately not
+  // the free-form action menu: at eighteen almost everyone faces the same four
+  // doors, and which ones are actually open is the whole point.
+  //
+  // `gate` names a function in script.js (STAGE_GATES) that decides whether an
+  // option is open and, if it isn't, says why in the player's own terms.
+
+  stages: {
+    18: {
+      title: "You're eighteen",
+      prompt: "School is finished. Everyone is asking what you're doing next, and the answer has to be one of these.",
+      options: [
+        {
+          id: "college",
+          label: "Go to college",
+          blurb: "Which kind is not entirely up to you.",
+          icon: "school",
+          expands: "collegeTiers"
+        },
+        {
+          id: "work",
+          label: "Get a job",
+          blurb: "Income now, ceiling later.",
+          icon: "work",
+          resolve: { setJob: "entry", text: "You start looking, and take the first thing that calls back." }
+        },
+        {
+          id: "military",
+          label: "Join the military",
+          blurb: "A wage, training, and education benefits after.",
+          icon: "conditions",
+          gate: "militaryEligible",
+          resolve: { setJob: "service", flags: { veteran: true }, health: -2,
+                     text: "You enlist. Basic training, then a posting, then a steady wage for the first time." }
+        },
+        {
+          id: "nothing",
+          label: "Do nothing yet",
+          blurb: "Stay where you are and see what happens.",
+          icon: "age",
+          resolve: { text: "You stay put. The months go by and nothing in particular decides itself." }
+        }
+      ]
+    }
+  },
+
+  // College tiers, opened or closed by prior performance and circumstance.
+  // A closed tier still shows, with the reason — the closed doors are content.
+  collegeTiers: [
+    {
+      id: "elite",
+      label: "An elite private university",
+      gate: "eliteEligible",
+      cost: { wealth: 500 },
+      outcomes: [
+        { id: "aid", chance: 0.30, text: "Accepted, with need-based aid that covers most of it.", effects: { durationMonths: 12, wealth: -1500, academicPerformance: 6 }, flags_set: { education: "elite_university" } },
+        { id: "no_aid", chance: 0.30, text: "Accepted. The aid letter covers far less than you hoped.", effects: { durationMonths: 12, wealth: -12000, debt: 9000, academicPerformance: 4 }, flags_set: { education: "elite_university", debt_holder: true } },
+        { id: "reject", chance: 0.40, text: "Rejected. No reason is given, and none is owed.", effects: {} }
+      ]
+    },
+    {
+      id: "state",
+      label: "A state university",
+      gate: "stateEligible",
+      cost: { wealth: 200 },
+      outcomes: [
+        { id: "grant", chance: 0.30, text: "Accepted with a need-based grant.", effects: { durationMonths: 12, wealth: -1000, academicPerformance: 4 }, flags_set: { education: "state_university" } },
+        { id: "accept", chance: 0.40, text: "Accepted. Tuition will stretch everything you have.", effects: { durationMonths: 12, wealth: -3000, debt: 6000, academicPerformance: 3 }, flags_set: { education: "state_university", debt_holder: true } },
+        { id: "reject", chance: 0.30, text: "Rejected. You reassess.", effects: {} }
+      ]
+    },
+    {
+      id: "community",
+      label: "Community college",
+      gate: "always",
+      cost: { wealth: 50 },
+      outcomes: [
+        { id: "accepted", chance: 0.85, text: "Enrolled, after a placement test that puts you in two remedial courses.", effects: { durationMonths: 12, academicPerformance: 2 }, flags_set: { education: "cc_enrolled" } },
+        { id: "part_time", chance: 0.15, text: "Enrolled part-time, around a work schedule.", effects: { durationMonths: 12, academicPerformance: 1 }, flags_set: { education: "cc_part_time" } }
+      ]
+    }
+  ],
+
+  // ===========================================================================
   // ACTIONS
   // ===========================================================================
   // Schema:

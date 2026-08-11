@@ -98,7 +98,13 @@
           <span class="tab-icon" data-icon="age"></span>
           <span>Age Up</span>
         </button>
-        <nav id="tabBar" class="tabs"></nav>
+
+        <!-- Secondary. The stage decision is the main choice; these are extras. -->
+        <button id="moreBtn" class="more-btn" aria-expanded="false" aria-controls="tabBar">
+          Other things you could do <span class="chev">▾</span>
+        </button>
+        <nav id="tabBar" class="tabs collapsed"></nav>
+
         <button id="exportBtn" class="ghost small">Export this life as JSON</button>
       </footer>
 

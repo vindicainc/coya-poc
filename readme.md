@@ -70,6 +70,56 @@ the panel background. Originals are kept in `raw/` so the step is reversible.
 
 ---
 
+## Life stages
+
+Play is not a free-form menu. At a stage age the game stops and asks one
+question with a small number of answers, and ageing is blocked until it is
+answered. At eighteen there are exactly four: college, a job, the military, or
+nothing. Choosing college opens a second card listing the three tiers.
+
+**Closed doors are content.** A tier or path you cannot take still appears, with
+the reason stated in the player's own terms — "your school offered no AP or
+honours courses, and the application reads that as you" — rather than being
+silently absent. Which doors are open is the argument the sim is making, so
+hiding the closed ones would throw it away.
+
+Gates live in `STAGE_GATES` in `script.js`. They are deliberately tuned so that
+disadvantage is a headwind rather than a wall: state universities are open to
+nearly everyone, and elite admission is the gated one. An earlier tuning locked
+under-resourced students out of state university entirely, which is both wrong
+and worse drama.
+
+## AI narration
+
+The AI writes prose. It does not decide anything.
+
+The engine rolls every outcome and applies every bias multiplier first; the
+model is then handed the settled result and asked for two or three sentences
+describing it. This keeps the odds display, the counterfactuals and the whole
+measurement apparatus true — a probability shown to the player is a probability
+that actually ran. If the call fails, times out, or is disabled, play continues
+on the written templates and the player sees nothing missing. Three consecutive
+failures switch it off for the session.
+
+### The endpoint
+
+`netlify/functions/narrate.js`, exposed at `/api/narrate`.
+
+An earlier version of this project shipped a function that took `userInput` from
+the request body and passed it straight to the model. That is a free,
+unauthenticated LLM for anyone who finds the URL, billed to whatever key is
+configured. It sat live for about eleven months before being removed.
+
+The rule that prevents a repeat: **the caller never supplies prompt text.** The
+body carries structured game state, every field is checked against a closed set
+of allowed values, and the prompt is assembled inside the function. There is no
+field for prose to land in, so a caller cannot steer the model. The player's
+name is the one free-text value and is stripped to letters and length-capped.
+Also enforced: a 2KB body cap, a per-IP rate limit, capped output tokens, and
+provider errors that are logged but never echoed to the client.
+
+If you extend this function, keep that property.
+
 ## The lives counter
 
 The creation screen shows a "lives lived" count, seeded at 200 and incremented
